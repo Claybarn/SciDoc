@@ -66,6 +66,10 @@ export function bibliographyEntry(c: Citation, style: CitationStyle): string {
       parts.push(`${loc}.`);
     }
   }
+  if (c.source === 'preprint' || c.source === 'arxiv') {
+    parts.push('[Preprint].');
+  }
+  if (c.arxivId) parts.push(`arXiv:${c.arxivId}.`);
   if (c.doi) parts.push(`https://doi.org/${c.doi}`);
   else if (c.url) parts.push(c.url);
   return parts.join(' ');

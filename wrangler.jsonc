@@ -1,10 +1,14 @@
-// Cloudflare Workers config: serve the built Vite app as static assets.
+// Cloudflare Workers config: serve the built Vite SPA as static assets and
+// run the Worker first for /api/* so it can proxy arXiv and ADS (no CORS upstream).
 {
   "$schema": "https://unpkg.com/wrangler/config-schema.json",
   "name": "scidoc",
+  "main": "./worker/index.ts",
   "compatibility_date": "2026-07-08",
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
   }
 }

@@ -5,11 +5,23 @@ export interface CitationAuthor {
   given?: string;
 }
 
+export type CitationSource =
+  | 'crossref'
+  | 'pubmed'
+  | 'preprint'
+  | 'arxiv'
+  | 'ads'
+  | 'manual';
+
 export interface Citation {
   id: string;
-  source: 'crossref' | 'pubmed' | 'manual';
+  source: CitationSource;
   doi?: string;
   pmid?: string;
+  arxivId?: string;
+  bibcode?: string;
+  /** Preprint server or repository name, e.g. "bioRxiv", "arXiv". */
+  server?: string;
   title: string;
   authors: CitationAuthor[];
   year?: number;
