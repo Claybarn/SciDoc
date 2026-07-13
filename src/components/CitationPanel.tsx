@@ -1,7 +1,10 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BookMarked,
+  Check,
+  ChevronDown,
   CornerDownLeft,
+  Info,
   KeyRound,
   Loader2,
   Plus,
@@ -12,12 +15,19 @@ import {
 import { smartSearch, type SearchSource } from '../api/citations';
 import type { Citation, CitationSource } from '../types';
 
-const SOURCE_OPTIONS: { value: SearchSource; label: string; placeholder: string }[] = [
-  { value: 'pubmed', label: 'PubMed', placeholder: 'Title, author, DOI, or PMID…' },
-  { value: 'crossref', label: 'CrossRef', placeholder: 'Title, author, or DOI…' },
-  { value: 'preprint', label: 'Preprints (bioRxiv / medRxiv…)', placeholder: 'Title, author, or DOI…' },
-  { value: 'arxiv', label: 'arXiv', placeholder: 'Title, author, or arXiv ID…' },
-  { value: 'ads', label: 'NASA ADS (astrophysics)', placeholder: 'Title, author, or bibcode…' },
+interface SourceOption {
+  value: SearchSource;
+  label: string;
+  desc: string;
+  placeholder: string;
+}
+
+const SOURCE_OPTIONS: SourceOption[] = [
+  { value: 'pubmed', label: 'PubMed', desc: 'Biomedical literature', placeholder: 'Title, author, DOI, or PMID…' },
+  { value: 'crossref', label: 'CrossRef', desc: 'Cross-discipline journals', placeholder: 'Title, author, or DOI…' },
+  { value: 'preprint', label: 'Preprints', desc: 'bioRxiv, medRxiv & more', placeholder: 'Title, author, or DOI…' },
+  { value: 'arxiv', label: 'arXiv', desc: 'Physics, math, CS', placeholder: 'Title, author, or arXiv ID…' },
+  { value: 'ads', label: 'NASA ADS', desc: 'Astrophysics', placeholder: 'Title, author, or bibcode…' },
 ];
 
 const SOURCE_BADGE: Record<CitationSource, string> = {
@@ -98,6 +108,18 @@ export function CitationPanel({
   const [searched, setSearched] = useState(false);
   const [adsToken, setAdsToken] = useState(() => localStorage.getItem(ADS_TOKEN_KEY) ?? '');
   const [adsTokenOpen, setAdsTokenOpen] = useState(false);
+  const [adsInfoOpen, setAdsInfoOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const sourceRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!sourceOpen) return;
+    const close = (e: MouseEvent) => {
+      if (!sourceRef.current?.contains(e.target as Node)) setSourceOpen(false);
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [sourceOpen]);
 
   const saveAdsToken = useCallback((token: string) => {
     setAdsToken(token);
@@ -108,6 +130,13 @@ export function CitationPanel({
   const runSearch = useCallback(async () => {
     const q = query.trim();
     if (!q) return;
+    // Guide first-time ADS users instead of failing with a terse error.
+    if (source === 'ads' && !adsToken) {
+      setError(null);
+      setAdsInfoOpen(true);
+      setAdsTokenOpen(true);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -145,27 +174,96 @@ export function CitationPanel({
           <Search size={14} /> Find references
         </h3>
         <div className="source-row">
-          <select
-            className="source-select"
-            value={source}
-            onChange={(e) => setSource(e.target.value as SearchSource)}
-          >
-            {SOURCE_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-          {source === 'ads' && (
+          <div className="source-dropdown" ref={sourceRef}>
             <button
-              className={`icon-btn ads-key-btn${adsToken ? ' has-token' : ''}`}
-              title={adsToken ? 'ADS token saved — edit' : 'Add ADS API token'}
-              onClick={() => setAdsTokenOpen((o) => !o)}
+              className={`source-trigger${sourceOpen ? ' open' : ''}`}
+              onClick={() => setSourceOpen((o) => !o)}
             >
-              <KeyRound size={14} />
+              <span className={`source-dot source-${source}`} />
+              <span className="source-trigger-label">
+                {SOURCE_OPTIONS.find((o) => o.value === source)?.label}
+              </span>
+              <ChevronDown size={14} className="source-chevron" />
             </button>
+            {sourceOpen && (
+              <div className="source-menu" role="listbox">
+                {SOURCE_OPTIONS.map((o) => (
+                  <button
+                    key={o.value}
+                    role="option"
+                    aria-selected={o.value === source}
+                    className={`source-item${o.value === source ? ' active' : ''}`}
+                    onClick={() => {
+                      setSource(o.value);
+                      setSourceOpen(false);
+                    }}
+                  >
+                    <span className={`source-dot source-${o.value}`} />
+                    <span className="source-item-text">
+                      <span className="source-item-label">{o.label}</span>
+                      <span className="source-item-desc">{o.desc}</span>
+                    </span>
+                    {o.value === source && <Check size={15} className="source-check" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {source === 'ads' && (
+            <>
+              <button
+                className={`icon-btn ads-info-btn${adsInfoOpen ? ' active' : ''}`}
+                title="What is an ADS token?"
+                onClick={() => setAdsInfoOpen((o) => !o)}
+              >
+                <Info size={14} />
+              </button>
+              <button
+                className={`icon-btn ads-key-btn${adsToken ? ' has-token' : ''}`}
+                title={adsToken ? 'ADS token saved — edit' : 'Add ADS API token'}
+                onClick={() => setAdsTokenOpen((o) => !o)}
+              >
+                <KeyRound size={14} />
+              </button>
+            </>
           )}
         </div>
+
+        {source === 'ads' && adsInfoOpen && (
+          <div className="ads-info-box">
+            <p className="ads-info-lead">
+              <strong>NASA ADS</strong> is the reference database for astronomy and astrophysics.
+              It asks each person to use a personal <em>API token</em> — a
+              free key that lets the app search on your behalf.
+            </p>
+            <ol className="ads-info-steps">
+              <li>
+                Create a free account at{' '}
+                <a href="https://ui.adsabs.harvard.edu/user/account/register" target="_blank" rel="noreferrer">
+                  ADS
+                </a>{' '}
+                (or sign in).
+              </li>
+              <li>
+                Open{' '}
+                <a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noreferrer">
+                  Settings → API Token
+                </a>{' '}
+                and copy the token it shows.
+              </li>
+              <li>Paste it into the key field here — it stays on your device and is never shared.</li>
+            </ol>
+            <button
+              className="btn btn-primary ads-info-cta"
+              onClick={() => {
+                setAdsTokenOpen(true);
+                setAdsInfoOpen(false);
+              }}
+            >
+              Enter my token
+            </button>
+          </div>
+        )}
 
         {source === 'ads' && adsTokenOpen && (
           <div className="ads-token-box">
@@ -176,14 +274,9 @@ export function CitationPanel({
               value={adsToken}
               onChange={(e) => saveAdsToken(e.target.value)}
             />
-            <a
-              className="ads-token-help"
-              href="https://ui.adsabs.harvard.edu/user/settings/token"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Get a free token from ADS →
-            </a>
+            <button className="ads-token-help-link" onClick={() => setAdsInfoOpen(true)}>
+              What is this? How do I get one?
+            </button>
           </div>
         )}
 
