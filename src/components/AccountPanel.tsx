@@ -77,7 +77,7 @@ function AuthModal({
         {error && <div className="cit-error">{error}</div>}
         {notice && <div className="auth-notice">{notice}</div>}
         <div className="auth-actions">
-          <button className="btn btn-ghost" disabled={busy} onClick={() => submit('up')}>
+          <button className="btn btn-secondary" disabled={busy} onClick={() => submit('up')}>
             Create account
           </button>
           <button className="btn btn-primary" disabled={busy} onClick={() => submit('in')}>
@@ -103,10 +103,14 @@ export function AccountPanel({
   if (!email) {
     return (
       <>
-        <button className="account-signin" onClick={() => setModalOpen(true)}>
-          <CloudOff size={14} />
-          <span>Local only — set up sync</span>
-        </button>
+        <div className="account-cta">
+          <button className="btn btn-primary account-cta-btn" onClick={() => setModalOpen(true)}>
+            <LogIn size={15} /> Sign in / Sign up
+          </button>
+          <span className="account-cta-hint">
+            <CloudOff size={12} /> Documents are on this device only
+          </span>
+        </div>
         {modalOpen && (
           <AuthModal onSignIn={onSignIn} onSignUp={onSignUp} onClose={() => setModalOpen(false)} />
         )}

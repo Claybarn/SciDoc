@@ -6,7 +6,7 @@ import {
   type ReactNodeViewProps,
 } from '@tiptap/react';
 import { CitationStore } from '../lib/citationStore';
-import { inTextLabel } from '../lib/format';
+import { citationUrl, inTextLabel } from '../lib/format';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -35,18 +35,26 @@ function CitationView({ node, extension, selected }: ReactNodeViewProps) {
     label = `(${inTextLabel(citation)})`;
   }
 
+  const url = citation ? citationUrl(citation) : null;
+
   const classes = ['citation-chip'];
   if (missing) classes.push('citation-missing');
   if (selected) classes.push('citation-selected');
+  if (url) classes.push('citation-linked');
+
+  const tooltip = citation
+    ? [citation.title, citation.journal, citation.year].filter(Boolean).join(' · ') +
+      (url ? ' · Click to open' : '')
+    : 'Citation removed from bundle';
 
   return (
     <NodeViewWrapper as="span" className={classes.join(' ')}>
       <span
-        title={
-          citation
-            ? [citation.title, citation.journal, citation.year].filter(Boolean).join(' · ')
-            : 'Citation removed from bundle'
-        }
+        title={tooltip}
+        onClick={() => {
+          // Browsers don't follow links inside contenteditable, so open manually.
+          if (url) window.open(url, '_blank', 'noopener,noreferrer');
+        }}
       >
         {label}
       </span>

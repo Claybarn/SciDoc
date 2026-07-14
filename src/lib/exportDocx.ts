@@ -3,6 +3,7 @@ import {
   Document,
   ExternalHyperlink,
   HeadingLevel,
+  ImageRun,
   LevelFormat,
   Packer,
   Paragraph,
@@ -47,6 +48,48 @@ function run(text: string, m: Marks = {}): TextRun {
 }
 
 const HEADINGS = [HeadingLevel.HEADING_1, HeadingLevel.HEADING_2, HeadingLevel.HEADING_3] as const;
+
+/** Usable page width in pixels for embedded images (6.5in at 96dpi). */
+const MAX_IMAGE_WIDTH = 624;
+
+function dataUrlToImage(src: string): { data: Uint8Array; type: 'jpg' | 'png' | 'gif' | 'bmp' } | null {
+  const m = /^data:image\/(png|jpe?g|gif|bmp);base64,(.+)$/.exec(src);
+  if (!m) return null;
+  const type = m[1] === 'jpeg' || m[1] === 'jpg' ? 'jpg' : (m[1] as 'png' | 'gif' | 'bmp');
+  const bin = atob(m[2]);
+  const data = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+  return { data, type };
+}
+
+function imageParagraph(node: JSONContent): Paragraph {
+  const src = (node.attrs?.src as string) ?? '';
+  const parsed = dataUrlToImage(src);
+  if (!parsed) {
+    // External or unsupported source; leave a readable placeholder.
+    return new Paragraph({
+      children: [run(src ? `[image: ${src}]` : '[image]', { italics: true })],
+      spacing: { after: 160 },
+    });
+  }
+  const width = (node.attrs?.width as number) || 480;
+  const height = (node.attrs?.height as number) || 360;
+  const scale = Math.min(1, MAX_IMAGE_WIDTH / width);
+  return new Paragraph({
+    children: [
+      new ImageRun({
+        type: parsed.type,
+        data: parsed.data,
+        transformation: {
+          width: Math.round(width * scale),
+          height: Math.round(height * scale),
+        },
+      }),
+    ],
+    alignment: AlignmentType.CENTER,
+    spacing: { before: 160, after: 160 },
+  });
+}
 
 interface Ctx {
   citations: Record<string, Citation>;
@@ -162,6 +205,9 @@ function walkBlocks(
       }
       case 'horizontalRule':
         paragraphs.push(new Paragraph({ text: '⸻', alignment: AlignmentType.CENTER }));
+        break;
+      case 'image':
+        paragraphs.push(imageParagraph(node));
         break;
       default:
         if (node.content) walkBlocks(node.content, ctx, paragraphs, opts);

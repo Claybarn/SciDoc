@@ -46,6 +46,8 @@ interface Props {
   /** ids in order of first appearance in the text */
   order: string[];
   collapsed: boolean;
+  /** Viewer role: browse the bundle but don't modify it or the text. */
+  readOnly?: boolean;
   onAdd: (c: Citation) => void;
   onAddAndInsert: (c: Citation) => void;
   onInsert: (id: string) => void;
@@ -95,6 +97,7 @@ export function CitationPanel({
   citations,
   order,
   collapsed,
+  readOnly = false,
   onAdd,
   onAddAndInsert,
   onInsert,
@@ -308,7 +311,7 @@ export function CitationPanel({
                 actions={
                   dup ? (
                     <span className="cit-in-bundle">In bundle</span>
-                  ) : (
+                  ) : readOnly ? null : (
                     <>
                       <button
                         className="icon-btn"
@@ -349,14 +352,16 @@ export function CitationPanel({
             <CitationCard
               citation={citations[id]}
               actions={
-                <>
-                  <button className="icon-btn accent" title="Cite at cursor" onClick={() => onInsert(id)}>
-                    <Quote size={14} />
-                  </button>
-                  <button className="icon-btn danger" title="Remove from bundle" onClick={() => onRemove(id)}>
-                    <Trash2 size={14} />
-                  </button>
-                </>
+                readOnly ? null : (
+                  <>
+                    <button className="icon-btn accent" title="Cite at cursor" onClick={() => onInsert(id)}>
+                      <Quote size={14} />
+                    </button>
+                    <button className="icon-btn danger" title="Remove from bundle" onClick={() => onRemove(id)}>
+                      <Trash2 size={14} />
+                    </button>
+                  </>
+                )
               }
             />
           </div>
@@ -368,14 +373,16 @@ export function CitationPanel({
             <CitationCard
               citation={citations[id]}
               actions={
-                <>
-                  <button className="icon-btn accent" title="Cite at cursor" onClick={() => onInsert(id)}>
-                    <Quote size={14} />
-                  </button>
-                  <button className="icon-btn danger" title="Remove from bundle" onClick={() => onRemove(id)}>
-                    <Trash2 size={14} />
-                  </button>
-                </>
+                readOnly ? null : (
+                  <>
+                    <button className="icon-btn accent" title="Cite at cursor" onClick={() => onInsert(id)}>
+                      <Quote size={14} />
+                    </button>
+                    <button className="icon-btn danger" title="Remove from bundle" onClick={() => onRemove(id)}>
+                      <Trash2 size={14} />
+                    </button>
+                  </>
+                )
               }
             />
           </div>

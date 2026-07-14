@@ -27,6 +27,16 @@ function apaAuthors(authors: CitationAuthor[]): string {
   return `${authors.slice(0, 6).map(fmt).join(', ')}, … ${fmt(authors[authors.length - 1])}`;
 }
 
+/** Best available link to the paper itself, or null when we have none. */
+export function citationUrl(c: Citation): string | null {
+  if (c.doi) return `https://doi.org/${c.doi}`;
+  if (c.url) return c.url;
+  if (c.arxivId) return `https://arxiv.org/abs/${c.arxivId}`;
+  if (c.pmid) return `https://pubmed.ncbi.nlm.nih.gov/${c.pmid}/`;
+  if (c.bibcode) return `https://ui.adsabs.harvard.edu/abs/${encodeURIComponent(c.bibcode)}/abstract`;
+  return null;
+}
+
 /** Short label shown inside the editor, e.g. "Smith et al., 2021". */
 export function inTextLabel(c: Citation): string {
   const year = c.year ?? 'n.d.';

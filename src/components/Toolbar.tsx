@@ -12,6 +12,7 @@ import {
   Heading1,
   Heading2,
   Heading3,
+  ImagePlus,
   Italic,
   List,
   ListOrdered,
@@ -25,6 +26,7 @@ import {
   Strikethrough,
   TextQuote,
   Undo2,
+  UserPlus,
 } from 'lucide-react';
 import type { CitationStyle } from '../types';
 
@@ -36,6 +38,13 @@ interface Props {
   onExportDocx: () => void;
   onExportPdf: () => void;
   onInsertMath: (kind: 'inline' | 'block') => void;
+  onInsertImage: (files: File[]) => void;
+  /** Present only when signed in to cloud sync. */
+  onShare?: () => void;
+  /** Other people editing right now (from collaboration awareness). */
+  peers?: { name: string; color: string }[];
+  /** Viewer role: all editing controls disabled. */
+  readOnly?: boolean;
   saveState: 'saved' | 'saving';
   leftOpen: boolean;
   rightOpen: boolean;
@@ -51,6 +60,10 @@ export function Toolbar({
   onExportDocx,
   onExportPdf,
   onInsertMath,
+  onInsertImage,
+  onShare,
+  peers = [],
+  readOnly = false,
   saveState,
   leftOpen,
   rightOpen,
@@ -59,6 +72,7 @@ export function Toolbar({
 }: Props) {
   const [exportOpen, setExportOpen] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!exportOpen) return;
@@ -97,7 +111,7 @@ export function Toolbar({
     <button
       className={`tb-btn${active ? ' active' : ''}`}
       title={title}
-      disabled={disabled}
+      disabled={disabled || readOnly}
       onMouseDown={(e) => {
         e.preventDefault();
         action();
@@ -147,15 +161,52 @@ export function Toolbar({
       <div className="tb-group">
         {btn(false, 'Inline equation', <Sigma size={15} />, () => onInsertMath('inline'))}
         {btn(false, 'Display equation', <SquareSigma size={15} />, () => onInsertMath('block'))}
+        {btn(false, 'Insert image', <ImagePlus size={15} />, () => imageInputRef.current?.click())}
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            if (files.length > 0) onInsertImage(files);
+            e.target.value = '';
+          }}
+        />
       </div>
 
       <div className="tb-spacer" />
 
-      <span className={`save-badge ${saveState}`}>{saveState === 'saved' ? 'Saved' : 'Saving…'}</span>
+      {readOnly && <span className="readonly-badge">View only</span>}
+
+      {peers.length > 0 && (
+        <div className="peer-stack" title={peers.map((p) => p.name).join(', ')}>
+          {peers.slice(0, 4).map((p, i) => (
+            <span key={i} className="peer-dot" style={{ background: p.color }}>
+              {(p.name || '?')[0].toUpperCase()}
+            </span>
+          ))}
+          {peers.length > 4 && <span className="peer-more">+{peers.length - 4}</span>}
+        </div>
+      )}
+
+      {onShare && (
+        <button className="btn btn-ghost share-btn" onClick={onShare}>
+          <UserPlus size={15} /> Share
+        </button>
+      )}
+
+      {!readOnly && (
+        <span className={`save-badge ${saveState}`}>
+          {saveState === 'saved' ? 'Saved' : 'Saving…'}
+        </span>
+      )}
 
       <select
         className="style-select"
         value={citationStyle}
+        disabled={readOnly}
         onChange={(e) => onStyleChange(e.target.value as CitationStyle)}
         title="Citation style"
       >

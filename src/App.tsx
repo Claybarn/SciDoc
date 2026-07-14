@@ -3,6 +3,8 @@ import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import CharacterCount from '@tiptap/extension-character-count';
+import Collaboration from '@tiptap/extension-collaboration';
+import CollaborationCaret from '@tiptap/extension-collaboration-caret';
 import { Mathematics } from '@tiptap/extension-mathematics';
 import { FlaskConical } from 'lucide-react';
 import 'katex/dist/katex.min.css';
@@ -10,41 +12,66 @@ import 'katex/dist/katex.min.css';
 import type { Session } from '@supabase/supabase-js';
 
 import { CitationNode } from './editor/CitationNode';
+import { ImageNode } from './editor/ImageNode';
 import { CitationStore } from './lib/citationStore';
+import { processImageFile } from './lib/imageUtils';
 import { citationOrderFromContent } from './lib/format';
 import { supabase } from './lib/supabase';
+import { SupabaseCollabProvider } from './lib/collabProvider';
+import { myRole, type MemberRole } from './lib/sharing';
 import { deleteRemoteDocument, fullSync, pushDocument } from './lib/sync';
+import {
+  citationsMap,
+  contentFragment,
+  createYDoc,
+  dropYDoc,
+  getYDoc,
+  metaMap,
+  persistYDoc,
+  snapshotFromYDoc,
+} from './lib/docStore';
 import {
   deleteDocument,
   exportDocument,
   importDocument,
-  loadDocument,
   loadIndex,
   newDocument,
   saveDocument,
 } from './lib/storage';
-import type { Citation, CitationStyle, DocumentMeta, SciDocument } from './types';
+import type { Citation, CitationStyle, DocumentMeta } from './types';
 
 import { Sidebar } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
 import { CitationPanel } from './components/CitationPanel';
 import { Bibliography } from './components/Bibliography';
 import { MathDialog, type MathDialogState } from './components/MathDialog';
+import { ShareDialog } from './components/ShareDialog';
 import { AccountPanel, type SyncState } from './components/AccountPanel';
 
 import './App.css';
 
+const CARET_COLORS = ['#4f63f0', '#0e9488', '#c8871f', '#c0392b', '#5a3fb0', '#1f7a58', '#b0367c'];
+
+function caretColor(seed: string): string {
+  let h = 0;
+  for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) | 0;
+  return CARET_COLORS[Math.abs(h) % CARET_COLORS.length];
+}
+
 export default function App() {
   const [index, setIndex] = useState<DocumentMeta[]>(() => loadIndex());
-  const [doc, setDoc] = useState<SciDocument | null>(() => {
-    const first = loadIndex()[0];
-    return first ? loadDocument(first.id) : null;
-  });
-  const [order, setOrder] = useState<string[]>(() =>
-    doc ? citationOrderFromContent(doc.content) : [],
-  );
+  const [docId, setDocId] = useState<string | null>(() => loadIndex()[0]?.id ?? null);
+  const ydoc = useMemo(() => (docId ? getYDoc(docId) : null), [docId]);
+
+  // Document state mirrored out of the Y.Doc for React rendering.
+  const [title, setTitle] = useState('');
+  const [citations, setCitations] = useState<Record<string, Citation>>({});
+  const [citationStyle, setCitationStyle] = useState<CitationStyle>('numeric');
+  const [order, setOrder] = useState<string[]>([]);
+
   const [saveState, setSaveState] = useState<'saved' | 'saving'>('saved');
   const [mathDialog, setMathDialog] = useState<MathDialogState | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
   const [leftOpen, setLeftOpen] = useState(() => localStorage.getItem('scidoc:ui:left') !== '0');
   const [rightOpen, setRightOpen] = useState(() => localStorage.getItem('scidoc:ui:right') !== '0');
 
@@ -63,11 +90,8 @@ export default function App() {
   }, []);
 
   const store = useMemo(() => new CitationStore(), []);
-  const docRef = useRef(doc);
-  docRef.current = doc;
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // --- Cloud sync ---
+  // --- Cloud sync + auth ---
 
   const [session, setSession] = useState<Session | null>(null);
   const [syncState, setSyncState] = useState<SyncState>('idle');
@@ -75,10 +99,10 @@ export default function App() {
   const sessionRef = useRef(session);
   sessionRef.current = session;
 
-  const pushToCloud = useCallback((next: SciDocument) => {
+  const pushToCloud = useCallback((id: string) => {
     if (!sessionRef.current) return;
     setSyncState('syncing');
-    pushDocument(next)
+    pushDocument(id)
       .then(() => setSyncState('synced'))
       .catch((e) => {
         setSyncState('error');
@@ -90,21 +114,12 @@ export default function App() {
     if (!sessionRef.current) return;
     setSyncState('syncing');
     try {
-      const { pulled } = await fullSync();
+      await fullSync();
       setSyncState('synced');
       setSyncError(null);
-      if (pulled > 0) {
-        setIndex(loadIndex());
-        // Refresh the open document if a newer copy came down.
-        const current = docRef.current;
-        if (current) {
-          const fresh = loadDocument(current.id);
-          if (fresh && fresh.updatedAt > current.updatedAt) {
-            setDoc(fresh);
-            setOrder(citationOrderFromContent(fresh.content));
-          }
-        }
-      }
+      // Open documents update in place: fullSync merges into the same
+      // cached Y.Doc the editor is bound to.
+      setIndex(loadIndex());
     } catch (e) {
       setSyncState('error');
       setSyncError(e instanceof Error ? e.message : 'Sync failed');
@@ -118,124 +133,274 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // Full sync whenever we become signed in.
   useEffect(() => {
     if (session) runFullSync();
   }, [session, runFullSync]);
 
-  const scheduleSave = useCallback(
-    (next: SciDocument) => {
+  // --- Access role for the open document ---
+
+  const [role, setRole] = useState<MemberRole>('owner');
+  const readOnly = role === 'viewer';
+  const roleRef = useRef(role);
+  roleRef.current = role;
+
+  useEffect(() => {
+    // Local-only docs and signed-out use are always editable.
+    if (!docId || !session) {
+      setRole('owner');
+      return;
+    }
+    let cancelled = false;
+    setRole('owner');
+    myRole(docId, session.user.id)
+      .then((r) => {
+        if (!cancelled) setRole(r);
+      })
+      .catch(() => {
+        /* offline or RPC missing: leave editable, RLS still protects the server */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [docId, session]);
+
+  // --- Live collaboration provider (per open document, when signed in) ---
+
+  const [provider, setProvider] = useState<SupabaseCollabProvider | null>(null);
+  const [peers, setPeers] = useState<{ name: string; color: string }[]>([]);
+
+  useEffect(() => {
+    if (!ydoc || !docId || !session || !supabase) {
+      setProvider(null);
+      return;
+    }
+    const p = new SupabaseCollabProvider(ydoc, docId);
+    setProvider(p);
+    return () => {
+      p.destroy();
+      setProvider(null);
+    };
+  }, [ydoc, docId, session]);
+
+  useEffect(() => {
+    if (!provider) {
+      setPeers([]);
+      return;
+    }
+    const update = () => {
+      const others: { name: string; color: string }[] = [];
+      for (const [clientId, state] of provider.awareness.getStates()) {
+        if (clientId === provider.awareness.clientID) continue;
+        const user = (state as { user?: { name?: string; color?: string } }).user;
+        if (user) others.push({ name: user.name ?? 'Anonymous', color: user.color ?? '#888' });
+      }
+      setPeers(others);
+    };
+    update();
+    provider.awareness.on('change', update);
+    return () => provider.awareness.off('change', update);
+  }, [provider]);
+
+  const caretUser = useMemo(() => {
+    const email = session?.user.email ?? 'anonymous';
+    return { name: email.split('@')[0], color: caretColor(email) };
+  }, [session]);
+
+  // --- Mirror Y.Doc meta + citations into React state ---
+
+  useEffect(() => {
+    if (!ydoc) {
+      setTitle('');
+      setCitations({});
+      setCitationStyle('numeric');
+      setOrder([]);
+      return;
+    }
+    const meta = metaMap(ydoc);
+    const cits = citationsMap(ydoc);
+    const readMeta = () => {
+      setTitle((meta.get('title') as string) ?? '');
+      setCitationStyle((meta.get('citationStyle') as CitationStyle) ?? 'numeric');
+    };
+    const readCitations = () => setCitations(cits.toJSON() as Record<string, Citation>);
+    readMeta();
+    readCitations();
+    meta.observe(readMeta);
+    cits.observe(readCitations);
+    return () => {
+      meta.unobserve(readMeta);
+      cits.unobserve(readCitations);
+    };
+  }, [ydoc]);
+
+  // --- Persistence: any Y.Doc change (local or remote) saves + pushes ---
+
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!ydoc || !docId) return;
+    const flush = () => {
+      saveTimer.current = null;
+      persistYDoc(docId, ydoc);
+      saveDocument(snapshotFromYDoc(docId, ydoc));
+      setIndex(loadIndex());
+      setSaveState('saved');
+      // Viewers only receive changes; pushing would be rejected by RLS.
+      if (roleRef.current !== 'viewer') pushToCloud(docId);
+    };
+    const onUpdate = (_update: Uint8Array, origin: unknown) => {
+      if (origin === 'local-store') return;
       setSaveState('saving');
       if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => {
-        saveDocument(next);
-        setIndex(loadIndex());
-        setSaveState('saved');
-        pushToCloud(next);
-      }, 500);
-    },
-    [pushToCloud],
-  );
+      saveTimer.current = setTimeout(flush, 500);
+    };
+    ydoc.on('update', onUpdate);
+    return () => {
+      ydoc.off('update', onUpdate);
+      // Don't lose a pending save when switching documents or unmounting.
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        flush();
+      }
+    };
+  }, [ydoc, docId, pushToCloud]);
 
-  const updateDoc = useCallback(
-    (patch: Partial<SciDocument>) => {
-      setDoc((prev) => {
-        if (!prev) return prev;
-        const next = { ...prev, ...patch, updatedAt: Date.now() };
-        scheduleSave(next);
-        return next;
-      });
-    },
-    [scheduleSave],
-  );
+  // --- Images ---
 
-  const editor = useEditor({
-    extensions: [
-      StarterKit,
-      Placeholder.configure({ placeholder: 'Start writing your masterpiece…' }),
-      CharacterCount,
-      CitationNode.configure({ store }),
-      Mathematics.configure({
-        inlineOptions: {
-          onClick: (node, pos) =>
-            setMathDialog({ kind: 'inline', pos, latex: node.attrs.latex ?? '' }),
+  const editorRef = useRef<ReturnType<typeof useEditor> | null>(null);
+
+  const insertImages = useCallback(async (files: File[], pos?: number) => {
+    const ed = editorRef.current;
+    if (!ed || !ed.isEditable) return;
+    let at = pos;
+    for (const file of files) {
+      try {
+        const { src, width, height } = await processImageFile(file);
+        const content = { type: 'image', attrs: { src, width, height } };
+        const chain = ed.chain().focus();
+        if (at !== undefined) {
+          chain.insertContentAt(at, content).run();
+          at = undefined; // subsequent files follow the cursor
+        } else {
+          chain.insertContent(content).run();
+        }
+      } catch (e) {
+        alert(e instanceof Error ? e.message : 'Could not insert image');
+      }
+    }
+  }, []);
+
+  const imageFilesFrom = (list: FileList | null | undefined): File[] =>
+    Array.from(list ?? []).filter((f) => f.type.startsWith('image/'));
+
+  // --- Editor (recreated per document / provider) ---
+
+  const editor = useEditor(
+    {
+      editorProps: {
+        handlePaste: (_view, event) => {
+          const files = imageFilesFrom(event.clipboardData?.files);
+          if (files.length === 0) return false;
+          event.preventDefault();
+          insertImages(files);
+          return true;
         },
-        blockOptions: {
-          onClick: (node, pos) =>
-            setMathDialog({ kind: 'block', pos, latex: node.attrs.latex ?? '' }),
+        handleDrop: (view, event, _slice, moved) => {
+          if (moved) return false;
+          const files = imageFilesFrom(event.dataTransfer?.files);
+          if (files.length === 0) return false;
+          event.preventDefault();
+          const pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos;
+          insertImages(files, pos);
+          return true;
         },
-      }),
-    ],
-    content: doc?.content ?? undefined,
-    onUpdate: ({ editor: e }) => {
-      const content = e.getJSON();
-      setOrder(citationOrderFromContent(content));
-      updateDoc({ content });
+      },
+      extensions: [
+        StarterKit.configure({ undoRedo: false }),
+        Placeholder.configure({ placeholder: 'Start writing your masterpiece…' }),
+        CharacterCount,
+        ImageNode,
+        CitationNode.configure({ store }),
+        Mathematics.configure({
+          inlineOptions: {
+            onClick: (node, pos) => {
+              if (roleRef.current === 'viewer') return;
+              setMathDialog({ kind: 'inline', pos, latex: node.attrs.latex ?? '' });
+            },
+          },
+          blockOptions: {
+            onClick: (node, pos) => {
+              if (roleRef.current === 'viewer') return;
+              setMathDialog({ kind: 'block', pos, latex: node.attrs.latex ?? '' });
+            },
+          },
+        }),
+        ...(ydoc ? [Collaboration.configure({ fragment: contentFragment(ydoc) })] : []),
+        ...(provider
+          ? [CollaborationCaret.configure({ provider, user: caretUser })]
+          : []),
+      ],
+      onCreate: ({ editor: e }) => setOrder(citationOrderFromContent(e.getJSON())),
+      onUpdate: ({ editor: e }) => setOrder(citationOrderFromContent(e.getJSON())),
     },
-  });
+    [ydoc, provider, caretUser],
+  );
+  editorRef.current = editor;
+
+  useEffect(() => {
+    editor?.setEditable(!readOnly);
+  }, [editor, readOnly]);
 
   // Keep the citation chips inside the editor in sync with the bundle.
   useEffect(() => {
-    store.set(doc?.citations ?? {}, order, doc?.citationStyle ?? 'numeric');
-  }, [store, doc?.citations, doc?.citationStyle, order]);
+    store.set(citations, order, citationStyle);
+  }, [store, citations, citationStyle, order]);
 
-  const openDoc = useCallback(
-    (id: string) => {
-      if (id === docRef.current?.id) return;
-      const loaded = loadDocument(id);
-      if (!loaded || !editor) return;
-      setDoc(loaded);
-      setOrder(citationOrderFromContent(loaded.content));
-      editor.commands.setContent(loaded.content, { emitUpdate: false });
-    },
-    [editor],
-  );
+  // --- Document operations ---
+
+  const openDoc = useCallback((id: string) => {
+    setDocId((current) => (id === current ? current : id));
+    setShareOpen(false);
+  }, []);
 
   const createDoc = useCallback(() => {
     const fresh = newDocument();
+    createYDoc(fresh);
     saveDocument(fresh);
-    pushToCloud(fresh);
     setIndex(loadIndex());
-    setDoc(fresh);
-    setOrder([]);
-    editor?.commands.setContent(fresh.content, { emitUpdate: false });
-    editor?.commands.focus();
-  }, [editor, pushToCloud]);
+    setDocId(fresh.id);
+    pushToCloud(fresh.id);
+  }, [pushToCloud]);
 
   const removeDoc = useCallback(
     (id: string) => {
       deleteDocument(id);
+      dropYDoc(id);
       if (sessionRef.current) {
         deleteRemoteDocument(id).catch(() => {
-          /* remote copy will resurface on next full sync; acceptable for now */
+          /* shared docs we don't own can't be deleted remotely; local removal is enough */
         });
       }
       const nextIndex = loadIndex();
       setIndex(nextIndex);
-      if (docRef.current?.id === id) {
-        const next = nextIndex[0] ? loadDocument(nextIndex[0].id) : null;
-        setDoc(next);
-        setOrder(next ? citationOrderFromContent(next.content) : []);
-        if (next) editor?.commands.setContent(next.content, { emitUpdate: false });
-      }
+      setDocId((current) => (current === id ? (nextIndex[0]?.id ?? null) : current));
     },
-    [editor],
+    [],
   );
 
   const handleImport = useCallback(
     async (file: File) => {
       try {
         const imported = await importDocument(file);
-        pushToCloud(imported);
+        createYDoc(imported);
         setIndex(loadIndex());
-        setDoc(imported);
-        setOrder(citationOrderFromContent(imported.content));
-        editor?.commands.setContent(imported.content, { emitUpdate: false });
+        setDocId(imported.id);
+        pushToCloud(imported.id);
       } catch (e) {
         alert(e instanceof Error ? e.message : 'Import failed');
       }
     },
-    [editor, pushToCloud],
+    [pushToCloud],
   );
 
   // --- Auth ---
@@ -260,15 +425,13 @@ export default function App() {
     setSyncError(null);
   }, []);
 
-  // --- Citation bundle operations ---
+  // --- Citation bundle operations (write into the CRDT) ---
 
   const addCitation = useCallback(
     (c: Citation) => {
-      const d = docRef.current;
-      if (!d) return;
-      updateDoc({ citations: { ...d.citations, [c.id]: c } });
+      if (ydoc && roleRef.current !== 'viewer') citationsMap(ydoc).set(c.id, c);
     },
-    [updateDoc],
+    [ydoc],
   );
 
   const insertCitation = useCallback(
@@ -288,12 +451,9 @@ export default function App() {
 
   const removeCitation = useCallback(
     (id: string) => {
-      const d = docRef.current;
-      if (!d) return;
-      const { [id]: _, ...rest } = d.citations;
-      updateDoc({ citations: rest });
+      if (ydoc && roleRef.current !== 'viewer') citationsMap(ydoc).delete(id);
     },
-    [updateDoc],
+    [ydoc],
   );
 
   // --- Equations ---
@@ -326,11 +486,16 @@ export default function App() {
 
   const words = editor?.storage.characterCount.words() ?? 0;
 
+  const snapshot = useCallback(() => {
+    if (!docId || !ydoc) throw new Error('No document open');
+    return snapshotFromYDoc(docId, ydoc);
+  }, [docId, ydoc]);
+
   return (
     <div className="app">
       <Sidebar
         docs={index}
-        activeId={doc?.id ?? null}
+        activeId={docId}
         collapsed={!leftOpen}
         onSelect={openDoc}
         onCreate={createDoc}
@@ -350,22 +515,27 @@ export default function App() {
         )}
       </Sidebar>
 
-      {doc && editor ? (
+      {docId && ydoc && editor ? (
         <main className="workspace">
           <input
             className="doc-title"
-            value={doc.title}
+            value={title}
             placeholder="Untitled document"
-            onChange={(e) => updateDoc({ title: e.target.value })}
+            readOnly={readOnly}
+            onChange={(e) => !readOnly && metaMap(ydoc).set('title', e.target.value)}
           />
           <Toolbar
             editor={editor}
-            citationStyle={doc.citationStyle}
-            onStyleChange={(citationStyle: CitationStyle) => updateDoc({ citationStyle })}
-            onExportBundle={() => exportDocument(doc)}
-            onExportDocx={async () => (await import('./lib/exportDocx')).exportDocx(doc)}
+            citationStyle={citationStyle}
+            onStyleChange={(s: CitationStyle) => metaMap(ydoc).set('citationStyle', s)}
+            onExportBundle={() => exportDocument(snapshot())}
+            onExportDocx={async () => (await import('./lib/exportDocx')).exportDocx(snapshot())}
             onExportPdf={() => window.print()}
             onInsertMath={(kind) => setMathDialog({ kind, latex: '' })}
+            onInsertImage={(files) => insertImages(files)}
+            onShare={session ? () => setShareOpen(true) : undefined}
+            peers={peers}
+            readOnly={readOnly}
             saveState={saveState}
             leftOpen={leftOpen}
             rightOpen={rightOpen}
@@ -374,16 +544,16 @@ export default function App() {
           />
           <div className="editor-scroll">
             <div className="page">
-              <h1 className="print-title">{doc.title || 'Untitled document'}</h1>
+              <h1 className="print-title">{title || 'Untitled document'}</h1>
               <EditorContent editor={editor} />
-              <Bibliography citations={doc.citations} order={order} style={doc.citationStyle} />
+              <Bibliography citations={citations} order={order} style={citationStyle} />
             </div>
           </div>
           <div className="statusbar">
             <span>{words} words</span>
             <span>
-              {order.filter((id) => doc.citations[id]).length} cited ·{' '}
-              {Object.keys(doc.citations).length} in bundle
+              {order.filter((id) => citations[id]).length} cited ·{' '}
+              {Object.keys(citations).length} in bundle
             </span>
           </div>
         </main>
@@ -407,11 +577,21 @@ export default function App() {
         />
       )}
 
-      {doc && (
+      {shareOpen && docId && session && (
+        <ShareDialog
+          docId={docId}
+          docTitle={title}
+          selfId={session.user.id}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
+
+      {docId && (
         <CitationPanel
-          citations={doc.citations}
+          citations={citations}
           order={order}
           collapsed={!rightOpen}
+          readOnly={readOnly}
           onAdd={addCitation}
           onAddAndInsert={addAndInsert}
           onInsert={insertCitation}
