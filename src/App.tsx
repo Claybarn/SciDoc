@@ -484,7 +484,8 @@ export default function App() {
     setMathDialog(null);
   }, [editor, mathDialog]);
 
-  const words = editor?.storage.characterCount.words() ?? 0;
+  const words =
+    editor && !editor.isDestroyed ? (editor.storage.characterCount?.words() ?? 0) : 0;
 
   const snapshot = useCallback(() => {
     if (!docId || !ydoc) throw new Error('No document open');

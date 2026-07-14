@@ -85,20 +85,41 @@ export function Toolbar({
 
   const state = useEditorState({
     editor,
-    selector: ({ editor: e }) => ({
-      bold: e.isActive('bold'),
-      italic: e.isActive('italic'),
-      strike: e.isActive('strike'),
-      code: e.isActive('code'),
-      h1: e.isActive('heading', { level: 1 }),
-      h2: e.isActive('heading', { level: 2 }),
-      h3: e.isActive('heading', { level: 3 }),
-      bulletList: e.isActive('bulletList'),
-      orderedList: e.isActive('orderedList'),
-      blockquote: e.isActive('blockquote'),
-      canUndo: e.can().undo(),
-      canRedo: e.can().redo(),
-    }),
+    selector: ({ editor: e }) => {
+      // The editor is recreated when the collaboration provider (dis)connects;
+      // this selector can run once against the destroyed instance, where
+      // isActive/can() would throw.
+      if (!e || e.isDestroyed) {
+        return {
+          bold: false,
+          italic: false,
+          strike: false,
+          code: false,
+          h1: false,
+          h2: false,
+          h3: false,
+          bulletList: false,
+          orderedList: false,
+          blockquote: false,
+          canUndo: false,
+          canRedo: false,
+        };
+      }
+      return {
+        bold: e.isActive('bold'),
+        italic: e.isActive('italic'),
+        strike: e.isActive('strike'),
+        code: e.isActive('code'),
+        h1: e.isActive('heading', { level: 1 }),
+        h2: e.isActive('heading', { level: 2 }),
+        h3: e.isActive('heading', { level: 3 }),
+        bulletList: e.isActive('bulletList'),
+        orderedList: e.isActive('orderedList'),
+        blockquote: e.isActive('blockquote'),
+        canUndo: e.can().undo(),
+        canRedo: e.can().redo(),
+      };
+    },
   });
 
   const btn = (
