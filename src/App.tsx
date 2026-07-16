@@ -18,7 +18,7 @@ import { processImageFile } from './lib/imageUtils';
 import { citationOrderFromContent } from './lib/format';
 import { supabase } from './lib/supabase';
 import { SupabaseCollabProvider } from './lib/collabProvider';
-import { myRole, type MemberRole } from './lib/sharing';
+import { myRole, removeMember, type MemberRole } from './lib/sharing';
 import { deleteRemoteDocument, fullSync, pushDocument } from './lib/sync';
 import {
   citationsMap,
@@ -386,9 +386,11 @@ export default function App() {
       deleteDocument(id);
       dropYDoc(id);
       if (sessionRef.current) {
-        deleteRemoteDocument(id).catch(() => {
-          /* shared docs we don't own can't be deleted remotely; local removal is enough */
-        });
+        // Owners delete the cloud copy; for docs shared *to* us the delete
+        // no-ops, so also leave the member list — otherwise the next sync
+        // would pull the document right back.
+        deleteRemoteDocument(id).catch(() => {});
+        removeMember(id, sessionRef.current.user.id).catch(() => {});
       }
       const nextIndex = loadIndex();
       setIndex(nextIndex);
