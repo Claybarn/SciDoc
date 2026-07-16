@@ -158,20 +158,35 @@ export async function fullSync(): Promise<{ pulled: number; pushed: number }> {
     } else {
       // One rejected row fails a batched upsert; retry row-by-row so a
       // single unwritable document can't block everything else.
-      let lastError: string | null = null;
+      let hardError: string | null = null;
       for (const row of rows) {
         const { error: rowError } = await supabase.from('documents').upsert(row);
         if (rowError) {
-          lastError = rowError.message;
           if (isPermissionError(rowError.message)) {
             setDocumentOwner(row.id, FOREIGN_OWNER);
+          } else {
+            hardError = rowError.message;
           }
         } else {
           pushed++;
           markOwned(row.id);
         }
       }
-      if (pushed === 0 && lastError) throw new Error(lastError);
+      if (pushed === 0 && hardError) throw new Error(hardError);
+    }
+  }
+
+  // Re-probe documents previously marked foreign. If the mark came from a
+  // since-repaired server policy (or access has been granted), one clean
+  // push clears it; genuinely foreign documents just fail quietly again.
+  for (const meta of loadIndex()) {
+    if (meta.ownerId !== FOREIGN_OWNER || remoteIds.has(meta.id)) continue;
+    const { error: probeError } = await supabase
+      .from('documents')
+      .upsert(rowFor(meta.id, getYDoc(meta.id)));
+    if (!probeError) {
+      setDocumentOwner(meta.id, uid);
+      pushed++;
     }
   }
 

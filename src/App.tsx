@@ -98,9 +98,6 @@ export default function App() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const sessionRef = useRef(session);
   sessionRef.current = session;
-  const docIdRef = useRef(docId);
-  docIdRef.current = docId;
-
   // null = still resolving; pushes to the cloud wait until the role is known
   // so a viewer's client never attempts a write that RLS would reject.
   const [role, setRole] = useState<MemberRole | null>('owner');
@@ -115,14 +112,16 @@ export default function App() {
       .then(() => setSyncState('synced'))
       .catch((e) => {
         if (isPermissionError(e)) {
-          // The cloud copy belongs to another account (pushDocument has
-          // recorded that); switch to view-only instead of erroring forever.
-          if (docIdRef.current === id) setRole('viewer');
+          // pushDocument recorded the document as unwritable from this
+          // account; it opens view-only next time. Don't lock the editor
+          // mid-session — local edits are safe in the CRDT and will sync
+          // later if access is granted (or the server policy is repaired).
           setIndex(loadIndex());
           setSyncState('error');
           setSyncError(
-            'This document belongs to another SciDoc account — now opened as view-only. ' +
-              'Sign in as its owner to edit or share it.',
+            'The server refused to save this document from this account. ' +
+              'Your changes are kept on this device. If the document belongs to ' +
+              'your other account, sign in there to edit or share it.',
           );
           return;
         }
