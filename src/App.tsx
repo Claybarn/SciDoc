@@ -19,7 +19,7 @@ import { citationOrderFromContent } from './lib/format';
 import { supabase } from './lib/supabase';
 import { SupabaseCollabProvider } from './lib/collabProvider';
 import { myRole, removeMember, type MemberRole } from './lib/sharing';
-import { deleteRemoteDocument, fullSync, pushDocument } from './lib/sync';
+import { deleteRemoteDocument, fullSync, isPermissionError, pushDocument } from './lib/sync';
 import {
   citationsMap,
   contentFragment,
@@ -98,6 +98,15 @@ export default function App() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const sessionRef = useRef(session);
   sessionRef.current = session;
+  const docIdRef = useRef(docId);
+  docIdRef.current = docId;
+
+  // null = still resolving; pushes to the cloud wait until the role is known
+  // so a viewer's client never attempts a write that RLS would reject.
+  const [role, setRole] = useState<MemberRole | null>('owner');
+  const readOnly = role === 'viewer';
+  const roleRef = useRef(role);
+  roleRef.current = role;
 
   const pushToCloud = useCallback((id: string) => {
     if (!sessionRef.current) return;
@@ -105,6 +114,18 @@ export default function App() {
     pushDocument(id)
       .then(() => setSyncState('synced'))
       .catch((e) => {
+        if (isPermissionError(e)) {
+          // The cloud copy belongs to another account (pushDocument has
+          // recorded that); switch to view-only instead of erroring forever.
+          if (docIdRef.current === id) setRole('viewer');
+          setIndex(loadIndex());
+          setSyncState('error');
+          setSyncError(
+            'This document belongs to another SciDoc account — now opened as view-only. ' +
+              'Sign in as its owner to edit or share it.',
+          );
+          return;
+        }
         setSyncState('error');
         setSyncError(e instanceof Error ? e.message : 'Sync failed');
       });
@@ -138,13 +159,6 @@ export default function App() {
   }, [session, runFullSync]);
 
   // --- Access role for the open document ---
-
-  // null = still resolving; pushes to the cloud wait until the role is known
-  // so a viewer's client never attempts a write that RLS would reject.
-  const [role, setRole] = useState<MemberRole | null>('owner');
-  const readOnly = role === 'viewer';
-  const roleRef = useRef(role);
-  roleRef.current = role;
 
   useEffect(() => {
     // Local-only docs and signed-out use are always editable.

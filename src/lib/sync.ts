@@ -31,11 +31,30 @@ function rowFor(id: string, ydoc: Y.Doc) {
   };
 }
 
+/**
+ * Placeholder owner for documents whose cloud row is invisible to us (owned
+ * by another account with no membership). Any value differing from the
+ * signed-in user id keeps the document local/read-only for this account.
+ */
+const FOREIGN_OWNER = 'foreign';
+
+/** A write rejected by row-level security (as opposed to network issues). */
+export function isPermissionError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : '';
+  return /row-level security|permission denied/i.test(msg);
+}
+
 /** Push one document (CRDT state + derived snapshot). No-op when signed out. */
 export async function pushDocument(id: string): Promise<void> {
   if (!supabase) return;
   const { error } = await supabase.from('documents').upsert(rowFor(id, getYDoc(id)));
-  if (error) throw new Error(error.message);
+  if (error) {
+    const err = new Error(error.message);
+    // The row exists under an account we can't see into; remember that so
+    // we stop retrying a push that can never succeed.
+    if (isPermissionError(err)) setDocumentOwner(id, FOREIGN_OWNER);
+    throw err;
+  }
   // A successful push with no recorded owner means we just created the row.
   const uid = (await supabase.auth.getSession()).data.session?.user.id;
   const meta = loadIndex().find((m) => m.id === id);
@@ -144,6 +163,9 @@ export async function fullSync(): Promise<{ pulled: number; pushed: number }> {
         const { error: rowError } = await supabase.from('documents').upsert(row);
         if (rowError) {
           lastError = rowError.message;
+          if (isPermissionError(rowError.message)) {
+            setDocumentOwner(row.id, FOREIGN_OWNER);
+          }
         } else {
           pushed++;
           markOwned(row.id);
