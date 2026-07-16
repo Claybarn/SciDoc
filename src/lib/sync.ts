@@ -14,6 +14,7 @@ import type { SciDocument } from '../types';
 
 interface RemoteRow {
   id: string;
+  user_id: string;
   bundle: SciDocument;
   ydoc_state: string | null;
   updated_at: string;
@@ -54,11 +55,27 @@ export async function deleteRemoteDocument(id: string): Promise<void> {
 export async function fullSync(): Promise<{ pulled: number; pushed: number }> {
   if (!supabase) return { pulled: 0, pushed: 0 };
 
-  const { data, error } = await supabase
-    .from('documents')
-    .select('id, bundle, ydoc_state, updated_at');
-  if (error) throw new Error(error.message);
-  const remote = data as RemoteRow[];
+  const uid = (await supabase.auth.getSession()).data.session?.user.id;
+  if (!uid) return { pulled: 0, pushed: 0 };
+
+  const [docsRes, membershipRes] = await Promise.all([
+    supabase.from('documents').select('id, user_id, bundle, ydoc_state, updated_at'),
+    supabase.from('document_members').select('document_id, role').eq('user_id', uid),
+  ]);
+  if (docsRes.error) throw new Error(docsRes.error.message);
+  if (membershipRes.error) throw new Error(membershipRes.error.message);
+
+  const remote = docsRes.data as RemoteRow[];
+  const myRoles = new Map(
+    (membershipRes.data as { document_id: string; role: string }[]).map((m) => [
+      m.document_id,
+      m.role,
+    ]),
+  );
+  // RLS only allows writes by the owner or editor members; pushing anything
+  // else would fail the whole batch with a policy violation.
+  const canWrite = (row: RemoteRow) => row.user_id === uid || myRoles.get(row.id) === 'editor';
+
   const remoteIds = new Set(remote.map((r) => r.id));
   const localIds = new Set(loadIndex().map((m) => m.id));
 
@@ -76,7 +93,8 @@ export async function fullSync(): Promise<{ pulled: number; pushed: number }> {
       } else {
         createYDoc(row.bundle);
         saveDocument(row.bundle);
-        toPush.push(row.id); // upgrade the legacy row with CRDT state
+        // Upgrade the legacy row with CRDT state, if we may write it.
+        if (canWrite(row)) toPush.push(row.id);
       }
       pulled++;
       continue;
@@ -88,7 +106,7 @@ export async function fullSync(): Promise<{ pulled: number; pushed: number }> {
       saveDocument(snapshotFromYDoc(row.id, ydoc));
       pulled++;
     }
-    if (hasLocalChanges(ydoc, row.ydoc_state)) {
+    if (canWrite(row) && hasLocalChanges(ydoc, row.ydoc_state)) {
       toPush.push(row.id);
     }
   }

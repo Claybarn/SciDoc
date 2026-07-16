@@ -139,7 +139,9 @@ export default function App() {
 
   // --- Access role for the open document ---
 
-  const [role, setRole] = useState<MemberRole>('owner');
+  // null = still resolving; pushes to the cloud wait until the role is known
+  // so a viewer's client never attempts a write that RLS would reject.
+  const [role, setRole] = useState<MemberRole | null>('owner');
   const readOnly = role === 'viewer';
   const roleRef = useRef(role);
   roleRef.current = role;
@@ -151,18 +153,23 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    setRole('owner');
+    setRole(null);
     myRole(docId, session.user.id)
       .then((r) => {
-        if (!cancelled) setRole(r);
+        if (!cancelled) {
+          setRole(r);
+          // Cover any change that was held back while the role resolved.
+          if (r !== 'viewer') pushToCloud(docId);
+        }
       })
       .catch(() => {
-        /* offline or RPC missing: leave editable, RLS still protects the server */
+        // Offline or RPC missing: allow editing, RLS still protects the server.
+        if (!cancelled) setRole('owner');
       });
     return () => {
       cancelled = true;
     };
-  }, [docId, session]);
+  }, [docId, session, pushToCloud]);
 
   // --- Live collaboration provider (per open document, when signed in) ---
 
@@ -245,8 +252,10 @@ export default function App() {
       saveDocument(snapshotFromYDoc(docId, ydoc));
       setIndex(loadIndex());
       setSaveState('saved');
-      // Viewers only receive changes; pushing would be rejected by RLS.
-      if (roleRef.current !== 'viewer') pushToCloud(docId);
+      // Only push with a confirmed writable role; a viewer's (or unknown)
+      // push would be rejected by RLS. Held-back changes go up when the
+      // role resolves or on the next full sync.
+      if (roleRef.current === 'owner' || roleRef.current === 'editor') pushToCloud(docId);
     };
     const onUpdate = (_update: Uint8Array, origin: unknown) => {
       if (origin === 'local-store') return;
