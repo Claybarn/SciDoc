@@ -42,15 +42,27 @@ export function loadDocument(id: string): SciDocument | null {
   }
 }
 
-export function saveDocument(doc: SciDocument) {
+export function saveDocument(doc: SciDocument, ownerId?: string) {
   localStorage.setItem(DOC_PREFIX + doc.id, JSON.stringify(doc));
-  const index = loadIndex().filter((m) => m.id !== doc.id);
+  const all = loadIndex();
+  const prev = all.find((m) => m.id === doc.id);
+  const index = all.filter((m) => m.id !== doc.id);
   index.unshift({
     id: doc.id,
     title: doc.title,
     updatedAt: doc.updatedAt,
     citationCount: Object.keys(doc.citations).length,
+    ownerId: ownerId ?? prev?.ownerId,
   });
+  saveIndex(index);
+}
+
+/** Record which cloud account owns a document (kept across saves). */
+export function setDocumentOwner(id: string, ownerId: string) {
+  const index = loadIndex();
+  const meta = index.find((m) => m.id === id);
+  if (!meta || meta.ownerId === ownerId) return;
+  meta.ownerId = ownerId;
   saveIndex(index);
 }
 

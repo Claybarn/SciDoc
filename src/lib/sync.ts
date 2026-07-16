@@ -1,6 +1,6 @@
 import * as Y from 'yjs';
 import { supabase } from './supabase';
-import { loadIndex, saveDocument } from './storage';
+import { loadIndex, saveDocument, setDocumentOwner } from './storage';
 import {
   createYDoc,
   encodeState,
@@ -36,6 +36,10 @@ export async function pushDocument(id: string): Promise<void> {
   if (!supabase) return;
   const { error } = await supabase.from('documents').upsert(rowFor(id, getYDoc(id)));
   if (error) throw new Error(error.message);
+  // A successful push with no recorded owner means we just created the row.
+  const uid = (await supabase.auth.getSession()).data.session?.user.id;
+  const meta = loadIndex().find((m) => m.id === id);
+  if (uid && meta && !meta.ownerId) setDocumentOwner(id, uid);
 }
 
 export async function deleteRemoteDocument(id: string): Promise<void> {
@@ -89,10 +93,10 @@ export async function fullSync(): Promise<{ pulled: number; pushed: number }> {
         const ydoc = getYDoc(row.id);
         mergeRemoteState(ydoc, row.ydoc_state);
         persistYDoc(row.id, ydoc);
-        saveDocument(snapshotFromYDoc(row.id, ydoc));
+        saveDocument(snapshotFromYDoc(row.id, ydoc), row.user_id);
       } else {
         createYDoc(row.bundle);
-        saveDocument(row.bundle);
+        saveDocument(row.bundle, row.user_id);
         // Upgrade the legacy row with CRDT state, if we may write it.
         if (canWrite(row)) toPush.push(row.id);
       }
@@ -100,10 +104,11 @@ export async function fullSync(): Promise<{ pulled: number; pushed: number }> {
       continue;
     }
 
+    setDocumentOwner(row.id, row.user_id);
     const ydoc = getYDoc(row.id);
     if (row.ydoc_state && mergeRemoteState(ydoc, row.ydoc_state)) {
       persistYDoc(row.id, ydoc);
-      saveDocument(snapshotFromYDoc(row.id, ydoc));
+      saveDocument(snapshotFromYDoc(row.id, ydoc), row.user_id);
       pulled++;
     }
     if (canWrite(row) && hasLocalChanges(ydoc, row.ydoc_state)) {
@@ -112,15 +117,41 @@ export async function fullSync(): Promise<{ pulled: number; pushed: number }> {
   }
 
   for (const meta of loadIndex()) {
-    if (!remoteIds.has(meta.id)) toPush.push(meta.id);
+    if (remoteIds.has(meta.id)) continue;
+    // Invisible to us but possibly existing under another account that
+    // shares this browser's localStorage — pushing would hit RLS.
+    if (meta.ownerId && meta.ownerId !== uid) continue;
+    toPush.push(meta.id);
   }
 
+  let pushed = 0;
   if (toPush.length > 0) {
-    const { error: pushError } = await supabase
-      .from('documents')
-      .upsert(toPush.map((id) => rowFor(id, getYDoc(id))));
-    if (pushError) throw new Error(pushError.message);
+    const rows = toPush.map((id) => rowFor(id, getYDoc(id)));
+    const markOwned = (id: string) => {
+      // A row we just created (rather than updated) is now ours.
+      if (!remoteIds.has(id)) setDocumentOwner(id, uid);
+    };
+
+    const { error: pushError } = await supabase.from('documents').upsert(rows);
+    if (!pushError) {
+      pushed = toPush.length;
+      toPush.forEach(markOwned);
+    } else {
+      // One rejected row fails a batched upsert; retry row-by-row so a
+      // single unwritable document can't block everything else.
+      let lastError: string | null = null;
+      for (const row of rows) {
+        const { error: rowError } = await supabase.from('documents').upsert(row);
+        if (rowError) {
+          lastError = rowError.message;
+        } else {
+          pushed++;
+          markOwned(row.id);
+        }
+      }
+      if (pushed === 0 && lastError) throw new Error(lastError);
+    }
   }
 
-  return { pulled, pushed: toPush.length };
+  return { pulled, pushed };
 }

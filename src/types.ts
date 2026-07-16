@@ -55,4 +55,10 @@ export interface DocumentMeta {
   title: string;
   updatedAt: number;
   citationCount: number;
+  /**
+   * Cloud owner (auth user id), when known. localStorage is shared by every
+   * account used in this browser, so this distinguishes another account's
+   * documents from our own and from local-only ones.
+   */
+  ownerId?: string;
 }

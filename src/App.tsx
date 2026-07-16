@@ -154,17 +154,27 @@ export default function App() {
     }
     let cancelled = false;
     setRole(null);
-    myRole(docId, session.user.id)
+    const uid = session.user.id;
+    // localStorage is shared across accounts in this browser: a document the
+    // cloud says belongs to someone else (and isn't shared with us) must not
+    // be edited or pushed from this account.
+    const belongsToOtherAccount = () => {
+      const ownerId = loadIndex().find((m) => m.id === docId)?.ownerId;
+      return ownerId !== undefined && ownerId !== uid;
+    };
+    myRole(docId, uid)
       .then((r) => {
-        if (!cancelled) {
-          setRole(r);
-          // Cover any change that was held back while the role resolved.
-          if (r !== 'viewer') pushToCloud(docId);
-        }
+        if (cancelled) return;
+        // 'owner' is also what an empty member list (no cloud access) yields.
+        const effective = r === 'owner' && belongsToOtherAccount() ? 'viewer' : r;
+        setRole(effective);
+        // Cover any change that was held back while the role resolved.
+        if (effective !== 'viewer') pushToCloud(docId);
       })
       .catch(() => {
-        // Offline or RPC missing: allow editing, RLS still protects the server.
-        if (!cancelled) setRole('owner');
+        // Offline or RPC missing: fall back to the local ownership hint;
+        // RLS still protects the server either way.
+        if (!cancelled) setRole(belongsToOtherAccount() ? 'viewer' : 'owner');
       });
     return () => {
       cancelled = true;
