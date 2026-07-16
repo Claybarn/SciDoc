@@ -49,9 +49,12 @@ $$;
 drop policy "select own documents" on public.documents;
 drop policy "update own documents" on public.documents;
 
+-- The direct user_id check must stay inline: rows written via upsert
+-- (INSERT ... ON CONFLICT DO UPDATE) must satisfy this SELECT policy, and
+-- can_access_document() can't see a row that is still being inserted.
 create policy "select accessible documents"
   on public.documents for select
-  using (public.can_access_document(id));
+  using (user_id = auth.uid() or public.can_access_document(id));
 
 create policy "update accessible documents"
   on public.documents for update
